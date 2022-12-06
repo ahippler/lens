@@ -31,33 +31,34 @@ interface Dependencies {
 
 const listApiResources = ({ k8sRequest, logger }: Dependencies): ListApiResources => {
   return (cluster) => {
-    const clusterRequest = (path: string) => k8sRequest(cluster, path);
-    const apiLimit = plimit(5);
-
     return async () => {
       const resources: KubeApiResource[] = [];
 
       try {
-        const resourceListGroups:{ group:string;path:string }[] = [];
+        const apiLimit = plimit(5);
+        const clusterRequest = <T>(path: string) => apiLimit(
+          () => k8sRequest(cluster, path).catch(error => {
+            logger.error(`[LIST-API-RESOURCES]: request ${path} failed: ${error}`);
+          }) as Promise<T | undefined>);
+
+        const resourceListGroups: { group: string; path: string }[] = [];
 
         await Promise.all(
           [
-            clusterRequest("/api").then((response:V1APIVersions)=>response.versions.forEach(version => resourceListGroups.push({ group:version, path:`/api/${version}` }))),
-            clusterRequest("/apis").then((response:V1APIGroupList) => response.groups.forEach(group => {
+            clusterRequest<V1APIVersions>("/api").then((response) => response?.versions.forEach(version => resourceListGroups.push({ group: version, path: `/api/${version}` }))),
+            clusterRequest<V1APIGroupList>("/apis").then((response) => response?.groups.forEach(group => {
               const preferredVersion = group.preferredVersion?.groupVersion;
 
               if (preferredVersion) {
-                resourceListGroups.push({ group:group.name, path:`/apis/${preferredVersion}` });
+                resourceListGroups.push({ group: group.name, path: `/apis/${preferredVersion}` });
               }
             })),
           ],
         );
 
         await Promise.all(
-          resourceListGroups.map(({ group, path }) => apiLimit(async () => {
-            const apiResources:V1APIResourceList = await clusterRequest(path);
-
-            if (apiResources.resources) {
+          resourceListGroups.map(({ group, path }) => clusterRequest<V1APIResourceList>(path).then(apiResources => {
+            if (apiResources?.resources) {
               resources.push(
                 ...apiResources.resources.filter(resource => resource.verbs.includes("list")).map((resource) => ({
                   apiName: resource.name as KubeResource,
@@ -66,8 +67,8 @@ const listApiResources = ({ k8sRequest, logger }: Dependencies): ListApiResource
                 })),
               );
             }
-          }),
-          ),
+          },
+          )),
         );
       } catch (error) {
         logger.error(`[LIST-API-RESOURCES]: failed to list api resources: ${error}`);
